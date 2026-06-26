@@ -19,13 +19,14 @@ RESET='\033[0m'
 
 # ─── Constantes ─────────────────────────────────────────────
 POLL_INTERVAL=1   # segundos entre cada comprobación
+POLL_I2=2
 
 # ─── Funciones de UI ─────────────────────────────────────────
 banner() {
     echo
     echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════╗${RESET}"
     echo -e "${BOLD}${CYAN}║        ${MAGENTA}⚡  ProcessKill  ⚡${CYAN}               ║${RESET}"
-    echo -e "${BOLD}${CYAN}║   ${DIM}Terminator de procesos Linux v1.0${RESET}${BOLD}${CYAN}     ║${RESET}"
+    echo -e "${BOLD}${CYAN}║   ${DIM}Terminator de procesos Linux v1.1${RESET}${BOLD}${CYAN}     ║${RESET}"
     echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════╝${RESET}"
     echo
 }
@@ -41,12 +42,14 @@ separador() { echo -e "${DIM}─────────────────
 # ─── Dependencias opcionales ─────────────────────────────────
 check_deps() {
     local missing=()
-    for cmd in lsof ss; do
+    for cmd in lsof ss netstat; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
     if [[ ${#missing[@]} -gt 0 ]]; then
         warn "Comandos opcionales no encontrados: ${missing[*]}"
-        warn "La búsqueda por puerto puede ser limitada."
+        [[ " ${missing[*]} " =~ " netstat " ]] && \
+            warn "netstat ausente — instala con: sudo apt install net-tools"
+        warn "Algunas funciones pueden ser limitadas."
     fi
 }
 
@@ -172,6 +175,74 @@ loop_hasta_muerte() {
     echo
 }
 
+# ─── Verificación final con netstat ──────────────────────────
+# Ejecuta ambas variantes de netstat y muestra si queda rastro
+# del objetivo (por nombre o número de puerto) en las conexiones.
+verificacion_final_netstat() {
+    local objetivo="$1"
+
+    echo
+    separador
+    echo -e "${BOLD}${CYAN}[ VERIFICACIÓN FINAL — netstat ]${RESET}"
+    separador
+
+    if ! command -v netstat &>/dev/null; then
+        warn "netstat no está instalado. Omitiendo verificación."
+        warn "Para instalarlo: ${BOLD}sudo apt install net-tools${RESET}"
+        separador
+        echo
+        return 0
+    fi
+
+    # ── Ejecutar ambas variantes ───────────────────────────────
+    local cmd1="netstat -putona"
+    local cmd2="netstat -tunalp"
+    local salida1 salida2
+
+    sleep "$POLL_I2"
+
+    echo -e "${DIM}Comando 1:${RESET} ${BOLD}$cmd1 | grep \"$objetivo\"${RESET}"
+    salida1=$(eval "$cmd1" 2>/dev/null | grep --color=never "$objetivo" || true)
+
+    echo -e "${DIM}Comando 2:${RESET} ${BOLD}$cmd2 | grep \"$objetivo\"${RESET}"
+    salida2=$(eval "$cmd2" 2>/dev/null | grep --color=never "$objetivo" || true)
+
+    echo
+    # ── Evaluar resultados ─────────────────────────────────────
+    local encontrado=0
+
+    if [[ -n "$salida1" ]]; then
+        (( encontrado++ )) || true
+        echo -e "${YELLOW}▶ Resultado de ${BOLD}$cmd1${RESET}${YELLOW}:${RESET}"
+        echo "$salida1" | while IFS= read -r linea; do
+            echo -e "  ${DIM}$linea${RESET}"
+        done
+        echo
+    fi
+
+    if [[ -n "$salida2" ]]; then
+        (( encontrado++ )) || true
+        echo -e "${YELLOW}▶ Resultado de ${BOLD}$cmd2${RESET}${YELLOW}:${RESET}"
+        echo "$salida2" | while IFS= read -r linea; do
+            echo -e "  ${DIM}$linea${RESET}"
+        done
+        echo
+    fi
+
+    # ── Veredicto final ────────────────────────────────────────
+    separador
+    if [[ $encontrado -eq 0 ]]; then
+        echo -e "  ${BOLD}${GREEN}✔  LIMPIO${RESET} — \"$objetivo\" no aparece en netstat."
+        echo -e "  ${DIM}El proceso fue terminado correctamente.${RESET}"
+    else
+        echo -e "  ${BOLD}${RED}⚠  RASTRO DETECTADO${RESET} — \"$objetivo\" sigue visible en netstat."
+        echo -e "  ${DIM}Puede ser una conexión en estado TIME_WAIT/CLOSE_WAIT (normal)${RESET}"
+        echo -e "  ${DIM}o un proceso que se reinició. Revisa manualmente.${RESET}"
+    fi
+    separador
+    echo
+}
+
 # ═══════════════════════════════════════════════════════════════
 #  MAIN
 # ═══════════════════════════════════════════════════════════════
@@ -276,6 +347,8 @@ main() {
 
     echo -e "${BOLD}${GREEN}✔ Proceso completado.${RESET}"
     echo
-}
 
+    # ── 6. Verificación final con netstat ──────────────────────
+    verificacion_final_netstat "$objetivo"
+}
 main "$@"
